@@ -2,82 +2,111 @@
 cimport numpy as np
 import numpy as np
 
-
-cdef inline binary_leftmost(long[:] lims,
-                            long    val,
-                            long L=0):
-    cdef long R, m
-
-    R = len(lims) 
-    
-    while L < R:
-        m = (L+R)/2
-        if lims[m] > val: 
-            R = m
-        else: L = m + 1
-    return L - 1
-
-
+from libc.math cimport lrint, floor, fmod, remainder, log
+ 
 cpdef crosscorr_free(long[:] times,
-                     short[:] pos,
-                     lo, hi, no_bins,
-                     max_diff):
+                    short[:] pos,
+                    int lo, 
+                    int step,
+                    int reps,
+                    int max_diff):
     """Full auto- and cross-correlations for a free-running
     photoelectron measurement.
     
     Parameters
     ----------
-    times   : event arrival times
-    pos     : corresp. detector positions
-    lo      : smallest lag time, corresponds to the first entry in the correlation tensor.
-    hi      : largest  lag time, last entry on the lag-time axis.
-    no_bins : number of bins between `lo` and `hi`.
-    max_diff: Maximum number of forward differences t_{i+max_diff} - t_{i} that are formed
+    times   : Event arrival times
+    pos     : Corresp. detector positions
+    lo      : Smallest lag time on the lag-time axis.
+    step    : Step size of the lag-time axis.
+    reps    : Number of steps. Maximum lag time is thererfore `lo + step * reps`.
+    max_diff: Maximum number of forward differences `t_{i+max_diff} - t_{i}` that are formed
                 for the correlation calculation.
 
     Returns
     -------
 
-    corr : 3D array of dimension (128, 128, no_bins). Contains the auto- (on-axis) and cross-correlations (off-axis)
+    corr : 3D array of dimension (128, 128, reps). Contains the auto- (on-axis) and cross-correlations (off-axis). The normalization is chosen such that, for a Poissonian process of likelihood lambda, the autocorrelation is lambda**2.
     bins : Time-lag axis, dimension (no_bins,), for plotting `corr`.
 """
-
     cdef:
         int len_times, i, j
-        long t1, t2, diff, binMax
+        int t1, t2, diff, binMax
         int p1, p2
-        int L
-        long[:]  bins = np.zeros(no_bins, dtype=np.int_)
+        int iBin, curBin
         int[:,:,:] corr = np.zeros([128, 128,
-                                   no_bins], dtype=np.int32)
+                                    reps], dtype=np.int32)
+        double lambdatau = <double> times[-1] / step
+    
         
-    bins = np.linspace(lo, hi, no_bins,
-                       dtype=np.int_)
-    binMax = bins[-1]
+    binMax = lo + step * reps
     
     len_times = len(times)
-    
-    for i in range(len_times-max_diff):
-        L = 0
-        t1 = times[i]
-        p1 = pos[i]
-        
-        for j in range(max_diff):
-            t2 = times[i+j+1]
-            p2 = pos[i+j+1]
-            diff = t2 - t1
-            
-            if diff > binMax: 
-                continue
-            else:
-                L = binary_leftmost(bins, diff,
-                                    L=L)
-            if L >= 0:
-                corr[p1, p2, L] += 1
-            else: L = 0
-            
 
-    return np.asarray(bins), np.asarray(corr) 
+    norm = lambdatau - np.arange(reps, dtype=np.float_)
+    bins = np.arange(lo, lo+step*reps+1, step) 
+
+    
+    for j in range(max_diff):
+        for i in range(len_times-max_diff):
+            t1 = times[i]
+            t2 = times[i+j+1]
+            diff = t2 - t1
+
+            if (diff < binMax) and (diff >= lo):
+                p1 = pos[i]
+                p2 = pos[i+j+1]
+           
+                iBin = (diff-lo) // step
+                try:
+                    corr[p1, p2, iBin] += 1
+                except:
+                    print(diff, iBin)
+            
+    return np.asarray(corr) / (norm * step**2), bins[:-1]
+
+
+
+
+cpdef crosscorr_free_log(long[:] times,
+                         short[:] pos,
+                         double lo, 
+                         double hi, 
+                         double no_bins,
+                         int max_diff):
+    cdef:
+        int len_times, i, j
+        int t1, t2, diff, 
+        double binMax
+        int p1, p2
+        int iBin, curBin
+        int[:,:,:] corr = np.zeros([128, 128,
+                                    int(no_bins)], dtype=np.int32)
+        
+        double step = (hi-lo) / no_bins
+        double logdiff
+
+    binMax = hi - step
+    
+    len_times = len(times)
+    bins = np.exp( np.linspace(lo, hi, int(no_bins+1)) )
+    norm = times[-1] / np.diff(bins)
+    
+    for j in range(max_diff):
+        for i in range(len_times-max_diff):
+            t1 = times[i]
+            t2 = times[i+j+1]
+            diff = t2 - t1
+            logdiff = log(<double> diff)
+
+            if (logdiff < binMax) and (logdiff > lo):
+                p1 = pos[i]
+                p2 = pos[i+j+1]
+           
+                iBin = lrint( (logdiff-lo) / step)
+                corr[p1, p2, iBin] += 1
+            
+    return np.asarray(corr) / (norm * np.diff(bins)**2), bins[:-1]
 
 
 
@@ -116,8 +145,7 @@ cpdef crosscorr_free_binned(long[:] times,
             if diff > binMax: 
                 continue
             else:
-                L = binary_leftmost(lo_bin, diff,
-                                    L=L)
+                pass
 
             if (L >= 0) and (diff < (lo_bin[L] + 2*width)):
                 corr[p1, p2, L] += 1
@@ -160,8 +188,7 @@ cpdef tune_bin_freq(long[:] times,
             if diff > binMax: 
                 continue
             else:
-                L = binary_leftmost(lo_bin, diff,
-                                    L=L)
+                pass
 
             if (L >= 0) and (diff < (lo_bin[L] + 2*width)):
                 corr[L] += <double> diff - lo_bin[L] - width
