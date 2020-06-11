@@ -203,10 +203,10 @@ cpdef crosscorr_freePar(long[:] times,
 
                 pcorr[iThrd, p1, p2, iBin] += 1
 
-    for i in range(openmp.omp_get_max_threads()):
-        for p1 in range(128):
-            for p2 in range(128):
-                for j in range(reps):
+    for p1 in range(128):
+        for p2 in range(128):
+            for j in range(reps):
+                for i in range(openmp.omp_get_max_threads()):
                     corr[p1,p2,j] += pcorr[i,p1,p2,j]
             
     if norm=='none':
@@ -285,9 +285,14 @@ cpdef crosscorr_free_log(long[:] times,
         long t1, t2, diff, 
         double binMax
         int p1, p2
+        int iThrd
         int iBin, curBin
         double[:,:,:] corr = np.zeros([128, 128,
                                     int(no_bins)], )
+        double[:,:,:,:] pcorr = np.zeros([openmp.omp_get_max_threads(),
+                                    128, 128,
+                                    int(no_bins)], )
+        
         double tmax = <double> times[-1]
         double step = (hi-lo) / no_bins
         double logdiff
@@ -303,7 +308,9 @@ cpdef crosscorr_free_log(long[:] times,
     normfac = tmax / np.diff(bins)                
     normfac -= bins[:-1] / np.diff(bins)           
     
-    for j in range(max_diff):
+    for j in prange(max_diff,
+                    nogil=True):
+        iThrd = openmp.omp_get_thread_num()
         for i in range(len_times-max_diff):
             t1 = times[i]
             t2 = times[i+j+1]
@@ -315,7 +322,13 @@ cpdef crosscorr_free_log(long[:] times,
                 p2 = pos[i+j+1]
            
                 iBin = <int>( (logdiff-lo) / step )
-                corr[p1, p2, iBin] += 1
+                pcorr[iThrd, p1, p2, iBin] += 1
+
+    for p1 in range(128):
+        for p2 in range(128):
+            for j in range(int(no_bins)):
+                for i in range(openmp.omp_get_max_threads()):
+                    corr[p1,p2,j] += pcorr[i,p1,p2,j]
 
     if norm=='none':
         return np.asarray(corr), bins[:-1]
@@ -416,8 +429,8 @@ cpdef crosscorr_free_binnedPar(long[:] times,
 
 #   print('lambdatau is ', lambdatau)
 
-    for j in range(max_diff, 
-#           nogil=True
+    for j in prange(max_diff, 
+            nogil=True
             ):
         iThrd = openmp.omp_get_thread_num()
         for i in range(len_times-max_diff):
@@ -425,24 +438,24 @@ cpdef crosscorr_free_binnedPar(long[:] times,
             t2 = times[i+j+1]
             diff = <double>( t2 - t1 )
 
-#           if diff > binMax: continue
+            if diff <= binMax: 
 
-            remain = remainder(diff, cycle)
+                remain = remainder(diff, cycle)
 
-            if fabs(remain) < width:
-                p1 = pos[i]
-                p2 = pos[i+j+1]
-                iBin = <int>( (diff+width) / cycle )
+                if fabs(remain) < width:
+                    p1 = pos[i]
+                    p2 = pos[i+j+1]
+                    iBin = <int>( (diff+width) / cycle )
 
-#               try:
-                pcorr[iThrd, p1, p2, iBin] += 1
-#               except:
-#                   print(diff, remain, iBin)
+    #               try:
+                    pcorr[iThrd, p1, p2, iBin] += 1
+    #               except:
+    #                   print(diff, remain, iBin)
     
-    for i in range(openmp.omp_get_max_threads()):
-        for p1 in range(128):
-            for p2 in range(128):
-                for j in range(reps):
+    for p1 in range(128):
+        for p2 in range(128):
+            for j in range(reps):
+                for i in range(openmp.omp_get_max_threads()):
                     corr[p1,p2,j] += pcorr[i,p1,p2,j]
             
 
@@ -726,10 +739,10 @@ cpdef crosscorr_trigd(long[:] startCtr,
 #             if diff < binMax:
 
             
-    for i in range(openmp.omp_get_max_threads()):
-        for p1 in range(128):
-            for p2 in range(128):
-                for j in range(no_cycles*24):
+    for p1 in range(128):
+        for p2 in range(128):
+            for j in range(no_cycles*24):
+                for i in range(openmp.omp_get_max_threads()):
                     corr[p1,p2,j] += pcorr[i,p1,p2,j]
 
     if norm=='none':
@@ -767,3 +780,261 @@ cpdef crosscorr_trigd(long[:] startCtr,
     else:
         warn('Unclear choice of normalization. Using the default `lambda` instead.')
         return np.asarray(corr) / (normfac * cycle**2), bins
+
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# PRE-ACCUMULATED DATA
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+
+cpdef cumCrossCorrLin(long[:]   times,
+                      short[:]  pos,
+                      double[:] count,
+                        int lo, 
+                        int step,
+                        int reps,
+                        int max_diff,
+                        str norm='lambda',
+                        int npix=128,
+                        ):
+    """Full auto- and cross-correlations for a free-running
+    photoelectron measurement, parallel version.
+    
+    Parameters
+    ----------
+    times    : Event arrival times
+    pos      : Corresp. detector positions
+    lo       : Smallest lag time on the lag-time axis.
+    step     : Step size of the lag-time axis.
+    reps     : Number of steps. Maximum lag time is thererfore `lo + step * reps`.
+    max_diff : Maximum number of forward differences `t_{i+max_diff} - t_{i}`
+               that are formed for the correlation calculation.
+    norm     : One of `lambda`, `lamdatau`, `one` or `none`.
+    npix     : Width of the detector in pixels.
+
+    Returns
+    -------
+
+    corr : 3D array of dimension (npix, npix, reps). Contains the auto- (on-axis)
+           and cross-correlations (off-axis). The default normalization,
+           `lambda`, is chosen such that, for a Poissonian process of likelihood
+           lambda, the autocorrelation is lambda**2.
+    bins : Time-lag axis, dimension (no_bins,), for plotting `corr`.
+"""
+    cdef:
+        long len_times, i, j
+        long t1, t2, diff, binMax
+        int p1, p2, 
+        double s1, s2
+        int iThrd
+        double l1, l2
+        int iBin, curBin
+        double[:,:,:]   corr  = np.zeros([npix, npix, reps], )
+        double[:,:,:,:] pcorr = np.zeros([openmp.omp_get_max_threads(),
+                                    npix, npix,
+                                    reps], )
+        double tmax = <double> times[-1]
+        double fstep = <double> step
+        double lambdatau = (tmax-lo) / fstep
+
+        double[:] lambdas = np.zeros(npix)
+    
+        
+    binMax = lo + step * reps
+    
+    len_times = len(times)
+
+    normfac = lambdatau - np.arange(reps, dtype=np.float_)
+    bins = np.arange(lo, lo+step*reps+1, step) 
+
+    
+    for j in prange(max_diff, nogil=True):
+        iThrd = openmp.omp_get_thread_num()
+        for i in range(len_times-max_diff):
+            t1 = times[i]
+            t2 = times[i+j+1]
+            diff = t2 - t1
+
+            if (diff < binMax) and (diff >= lo):
+                p1 = pos[i]
+                p2 = pos[i+j+1]
+           
+                iBin = (diff-lo) // step
+
+                s1 = count[i]
+                s2 = count[i+j+1]
+
+                pcorr[iThrd, p1, p2, iBin] += s1 * s2
+
+    for p1 in range(npix):
+        for p2 in range(npix):
+            for j in range(reps):
+                for i in range(openmp.omp_get_max_threads()):
+                    corr[p1,p2,j] += pcorr[i,p1,p2,j]
+            
+    if norm=='none':
+        return np.asarray(corr), bins[:-1]
+
+    elif norm=='lambdatau':
+        return np.asarray(corr) / (normfac), bins[:-1]
+
+    elif norm=='one':
+
+        tmax = tmax*tmax
+
+        for i in range(len_times):
+            p1 = pos[i]
+            s1 = count[i]
+            lambdas[p1] += s1
+
+        for p1 in range(npix):
+            l1 = lambdas[p1]
+            if not l1: continue
+
+            for p2 in range(npix):
+                l2 = lambdas[p2]
+                if not l2: continue
+
+                for i in range(reps):
+                    corr[p1,p2,i] /= (l1 * l2) / tmax
+
+        return np.asarray(corr) / (normfac * step**2), bins[:-1]
+
+
+
+    elif norm=='lambda':
+        return np.asarray(corr) / (normfac * step**2), bins[:-1]
+
+    else:
+        warn('Unclear choice of normalization. Using the default `lambda` instead.')
+        return np.asarray(corr) / (normfac * step**2), bins[:-1]
+
+
+
+
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# PRE-ACCUMULATED DATA IN TWO DIMENSIONS
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+
+cpdef cumCrossCorrLin2D(long[:]   times,
+                        double[:,:] count,
+                        int lo, 
+                        int step,
+                        int reps,
+                        int max_diff,
+                        str norm='lambda',
+                        ):
+    """Full auto- and cross-correlations for a free-running
+    photoelectron measurement, parallel version.
+    
+    Parameters
+    ----------
+    times    : Event arrival times
+    count    : Corresp. spectra, 2D array of shape (npix, len(times))
+    lo       : Smallest lag time on the lag-time axis.
+    step     : Step size of the lag-time axis.
+    reps     : Number of steps. Maximum lag time is thererfore `lo + step * reps`.
+    max_diff : Maximum number of forward differences `t_{i+max_diff} - t_{i}`
+               that are formed for the correlation calculation.
+    norm     : One of `lambda`, `lamdatau`, `one` or `none`.
+
+    Returns
+    -------
+
+    corr : 3D array of dimension (npix, npix, reps). Contains the auto- (on-axis)
+           and cross-correlations (off-axis). The default normalization,
+           `lambda`, is chosen such that, for a Poissonian process of likelihood
+           lambda, the autocorrelation is lambda**2.
+    bins : Time-lag axis, dimension (no_bins,), for plotting `corr`.
+"""
+    cdef:
+        long len_times, i, j
+        long t1, t2, diff, binMax
+        int p1, p2, 
+        double s1, s2
+        int iThrd
+        double l1, l2
+        int iBin, curBin
+        int npix = count.shape[1]
+        double[:,:,:]   corr  = np.zeros([npix, npix, reps], )
+        double[:,:,:,:] pcorr = np.zeros([openmp.omp_get_max_threads(),
+                                    npix, npix,
+                                    reps], )
+        double tmax = <double> times[-1]
+        double fstep = <double> step
+        double lambdatau = (tmax-lo) / fstep
+
+        double[:] lambdas = np.zeros(npix)
+    
+        
+    binMax = lo + step * reps
+    
+    len_times = len(times)
+
+    normfac = lambdatau - np.arange(reps, dtype=np.float_)
+    bins = np.arange(lo, lo+step*reps+1, step) 
+
+    
+    for j in prange(max_diff, nogil=True):
+        iThrd = openmp.omp_get_thread_num()
+        for i in range(len_times-max_diff):
+            t1 = times[i]
+            t2 = times[i+j+1]
+            diff = t2 - t1
+
+            if (diff < binMax) and (diff >= lo):
+
+                iBin = (diff-lo) // step
+
+                for p1 in range(npix):
+                    s1 = count[i,p1]
+                    for p2 in range(npix):
+                        s2 = count[i+j+1,p2]
+
+                        pcorr[iThrd, p1, p2, iBin] += s1 * s2
+
+
+    for p1 in range(npix):
+        for p2 in range(npix):
+            for j in range(reps):
+                for i in range(openmp.omp_get_max_threads()):
+                    corr[p1,p2,j] += pcorr[i,p1,p2,j]
+            
+    if norm=='none':
+        return np.asarray(corr), bins[:-1]
+
+    elif norm=='lambdatau':
+        return np.asarray(corr) / (normfac), bins[:-1]
+
+    elif norm=='one':
+
+        tmax = tmax*tmax
+
+        for i in range(len_times):
+            for p1 in range(npix):
+                s1 = count[i,p1]
+                lambdas[p1] += s1
+
+        for p1 in range(npix):
+            l1 = lambdas[p1]
+            if not l1: continue
+
+            for p2 in range(npix):
+                l2 = lambdas[p2]
+                if not l2: continue
+
+                for i in range(reps):
+                    corr[p1,p2,i] /= (l1 * l2) / tmax
+
+        return np.asarray(corr) / (normfac * step**2), bins[:-1]
+
+
+
+    elif norm=='lambda':
+        return np.asarray(corr) / (normfac * step**2), bins[:-1]
+
+    else:
+        warn('Unclear choice of normalization. Using the default `lambda` instead.')
+        return np.asarray(corr) / (normfac * step**2), bins[:-1]
