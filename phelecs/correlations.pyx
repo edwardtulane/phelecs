@@ -75,7 +75,7 @@ cpdef crosscorr_free(long[:] times,
 
     
     for j in range(max_diff):
-        for i in range(len_times-max_diff):
+        for i in range(len_times -(j+1)):
             t1 = times[i]
             t2 = times[i+j+1]
             diff = t2 - t1
@@ -190,7 +190,7 @@ cpdef crosscorr_freePar(long[:] times,
     
     for j in prange(max_diff, nogil=True):
         iThrd = openmp.omp_get_thread_num()
-        for i in range(len_times-max_diff):
+        for i in range(len_times- (j+1)):
             t1 = times[i]
             t2 = times[i+j+1]
             diff = t2 - t1
@@ -311,7 +311,7 @@ cpdef crosscorr_free_log(long[:] times,
     for j in prange(max_diff,
                     nogil=True):
         iThrd = openmp.omp_get_thread_num()
-        for i in range(len_times-max_diff):
+        for i in range(len_times- (j+1)):
             t1 = times[i]
             t2 = times[i+j+1]
             diff = t2 - t1
@@ -377,8 +377,8 @@ cpdef crosscorr_free_binnedPar(long[:] times,
                                short[:] pos,
                                long reps,
                                double width,
+                               int max_diff,
                                double cycle=47856.62402159,
-                               int max_diff=100,
                                norm='lambda'):
     """Binned auto- and cross-correlations for a free-running
     photoelectron measurement, parallel version.
@@ -430,10 +430,9 @@ cpdef crosscorr_free_binnedPar(long[:] times,
 #   print('lambdatau is ', lambdatau)
 
     for j in prange(max_diff, 
-            nogil=True
-            ):
+            nogil=True):
         iThrd = openmp.omp_get_thread_num()
-        for i in range(len_times-max_diff):
+        for i in range(len_times- (j+1)):
             t1 = times[i]
             t2 = times[i+j+1]
             diff = <double>( t2 - t1 )
@@ -502,9 +501,8 @@ cpdef crosscorr_free_binnedPar(long[:] times,
 cpdef tune_bin_freqPar(long[:] times,
                     double width,
                     int no_bins,
+                    int max_diff,
                     double cycle=47856.62402159,
-                    int max_diff=100,
-
         ):
     cdef:
         long len_times = len(times)
@@ -523,7 +521,7 @@ cpdef tune_bin_freqPar(long[:] times,
 
     for j in prange(max_diff, nogil=True):
         iThrd = openmp.omp_get_thread_num()
-        for i in range(len_times-max_diff):
+        for i in range(len_times- (j+1)):
             t1 = times[i]
             t2 = times[i+j+1]
             diff = <double>( t2 - t1 )
@@ -550,9 +548,8 @@ cpdef tune_bin_freqPar(long[:] times,
 cpdef tune_bin_stdPar(long[:] times,
                     double width,
                     int no_bins,
+                    int max_diff,
                     double cycle=47856.643,
-                    int max_diff=100,
-
         ):
     cdef:
         long len_times = len(times)
@@ -574,7 +571,7 @@ cpdef tune_bin_stdPar(long[:] times,
     for j in prange(max_diff, nogil=True,
                     schedule='dynamic'):
         iThrd = openmp.omp_get_thread_num()
-        for i in range(len_times-max_diff):
+        for i in range(len_times-(j+1)):
             t1 = times[i]
             t2 = times[i+j+1]
             diff = <double>( t2 - t1 )
@@ -715,7 +712,7 @@ cpdef crosscorr_trigd(long[:] startCtr,
     for j in prange(max_diff, 
                     nogil=True,):
         iThrd = openmp.omp_get_thread_num()
-        for i in range(len_times - max_diff):
+        for i in range(len_times - (j+1) ):
             t1 = bunches[i]
             c1 = startCtr[i]
 
@@ -850,7 +847,7 @@ cpdef cumCrossCorrLin(long[:]   times,
     
     for j in prange(max_diff, nogil=True):
         iThrd = openmp.omp_get_thread_num()
-        for i in range(len_times-max_diff):
+        for i in range(len_times- (j+1)):
             t1 = times[i]
             t2 = times[i+j+1]
             diff = t2 - t1
@@ -963,8 +960,9 @@ cpdef cumCrossCorrLin2D(long[:]   times,
                                     npix, npix,
                                     reps], )
         double tmax = <double> times[-1]
+        double tmin = <double> times[ 0]
         double fstep = <double> step
-        double lambdatau = (tmax-lo) / fstep
+        double lambdatau = (tmax-tmin) / fstep 
 
         double[:] lambdas = np.zeros(npix)
     
@@ -976,10 +974,11 @@ cpdef cumCrossCorrLin2D(long[:]   times,
     normfac = lambdatau - np.arange(reps, dtype=np.float_)
     bins = np.arange(lo, lo+step*reps+1, step) 
 
-    
-    for j in prange(max_diff, nogil=True):
+    for j in prange(max_diff, nogil=True,
+                    schedule='static'):
+#   for j in  range(max_diff,           ):
         iThrd = openmp.omp_get_thread_num()
-        for i in range(len_times-max_diff):
+        for i in range(len_times-(j+1)):
             t1 = times[i]
             t2 = times[i+j+1]
             diff = t2 - t1
@@ -987,6 +986,7 @@ cpdef cumCrossCorrLin2D(long[:]   times,
             if (diff < binMax) and (diff >= lo):
 
                 iBin = (diff-lo) // step
+
 
                 for p1 in range(npix):
                     s1 = count[i,p1]
